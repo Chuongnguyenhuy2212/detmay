@@ -352,6 +352,41 @@ def chart_pmi(series):
     return fig
 
 
+def chart_inv_sales_ratio(series):
+    """RETAILIRSA – Retailers Inventory to Sales Ratio.
+    Giảm = bán tốt hơn tốc độ nhập → sắp đặt thêm đơn hàng."""
+    df = series.reset_index(); df.columns = ["date", "value"]
+    df["ma6"]  = df["value"].rolling(6).mean()
+    df["ma12"] = df["value"].rolling(12).mean()
+
+    # Color: green if below MA12 (destocking), red if above
+    colors = ["#3fb950" if v < (m or 999) else "#f85149"
+              for v, m in zip(df["value"], df["ma12"])]
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(x=df["date"], y=df["value"], name="Inv/Sales Ratio",
+                         marker_color=colors, opacity=0.65), secondary_y=False)
+    fig.add_trace(go.Scatter(x=df["date"], y=df["ma6"], name="MA6",
+                             line=dict(color="#e3b341", width=1.5, dash="dot")),
+                  secondary_y=False)
+    fig.add_trace(go.Scatter(x=df["date"], y=df["ma12"], name="MA12",
+                             line=dict(color="#ff9800", width=2)),
+                  secondary_y=False)
+    # MoM change
+    df["mom"] = df["value"].diff()
+    bar_colors2 = ["#3fb950" if (v or 0) < 0 else "#f85149" for v in df["mom"].fillna(0)]
+    fig.add_trace(go.Bar(x=df["date"], y=df["mom"], name="MoM ∆",
+                         marker_color=bar_colors2, opacity=0.5), secondary_y=True)
+    fig.update_layout(height=320,
+                      title="Tỷ lệ Tồn kho / Doanh số Bán lẻ Mỹ – RETAILIRSA<br>"
+                            "<sup>🟢 Giảm = nhà bán lẻ bán nhanh hơn → sắp đặt thêm đơn may mặc</sup>",
+                      **CHART_BASE)
+    fig.update_yaxes(title_text="Inv/Sales Ratio", secondary_y=False,
+                     gridcolor="rgba(255,255,255,0.06)")
+    fig.update_yaxes(title_text="MoM ∆", secondary_y=True, showgrid=False)
+    return fig
+
+
 def chart_dio_annual(df_a, ticker, name):
     """
     Annual DIO bars (colored: green if dropping, red if rising) + Turnover line.
@@ -792,6 +827,180 @@ with tab2:
             (st.success if d > 5 else st.info)(f"BDRY ${v:.2f} ({d:+.1f}% vs avg)")
         else:
             st.warning("Không có dữ liệu BDRY")
+
+    # ── RETAILIRSA – Inventory to Sales Ratio ────────────────────────────────────
+    st.divider()
+    st.markdown("#### 📦 Tỷ lệ Tồn kho / Doanh số Bán lẻ Mỹ (RETAILIRSA)")
+    st.markdown(
+        "<div class='sub-note'>Nguồn: FRED · "
+        "Tín hiệu: Giảm = nhà bán lẻ đang bán nhanh hơn nhập hàng → "
+        "sắp đặt thêm đơn hàng từ MSH/TNG (lag ~3–6 tháng)</div>",
+        unsafe_allow_html=True,
+    )
+    with st.spinner("FRED RETAILIRSA..."):
+        irsa, err_irsa = fred_series("RETAILIRSA", fred_key, START_MACRO)
+
+    if irsa is not None:
+        st.plotly_chart(chart_inv_sales_ratio(irsa), use_container_width=True)
+        latest_irsa = irsa.iloc[-1]
+        avg_irsa    = irsa.mean()
+        trend_3m    = irsa.diff().tail(3).mean()
+
+        col_i1, col_i2, col_i3, col_i4 = st.columns(4)
+        with col_i1:
+            st.metric("Tỷ lệ hiện tại", f"{latest_irsa:.2f}",
+                      f"{(latest_irsa - irsa.iloc[-2]):+.3f} vs tháng trước",
+                      delta_color="inverse")
+        with col_i2:
+            zone = ("🟢 Vùng MUA (< 2.2)" if latest_irsa < 2.2
+                    else "🔴 Vùng TRÁNH (> 2.5)" if latest_irsa > 2.5
+                    else "🟡 Trung tính")
+            st.metric("Vùng tín hiệu", zone, f"Ngưỡng: 2.0–2.2 / 2.5–2.6")
+        with col_i3:
+            st.metric("TB dài hạn", f"{avg_irsa:.2f}",
+                      f"{(latest_irsa - avg_irsa):+.3f}",
+                      delta_color="inverse")
+        with col_i4:
+            st.metric("Xu hướng 3T", "↓ Giảm ✅" if trend_3m < 0 else "↑ Tăng ⚠️",
+                      f"{trend_3m:+.4f}/tháng",
+                      delta_color="normal" if trend_3m < 0 else "inverse")
+
+        # Signal box with exact thresholds
+        if latest_irsa < 2.0:
+            st.success("🟢🟢 RETAILIRSA < 2.0 – **Vùng cực kỳ tích cực**: "
+                       "Hàng bán rất chạy, kho trống → Nike/Columbia sẽ đặt đơn gấp. "
+                       "Đây là lúc cổ phiếu dệt may tăng phi mã.")
+        elif latest_irsa < 2.2:
+            st.success("🟢 RETAILIRSA 2.0–2.2 – **Vùng tích cực**: "
+                       "Tồn kho đang ở mức thấp, đơn hàng MSH/TNG sẽ dồi dào sau 3–6 tháng.")
+        elif latest_irsa > 2.6:
+            st.error("🔴🔴 RETAILIRSA > 2.6 – **Vùng nguy hiểm**: "
+                     "Hàng ế, chất đống trong kho → các hãng sẽ hủy/giãn đơn. "
+                     "Nên tránh xa cổ phiếu dệt may.")
+        elif latest_irsa > 2.5:
+            st.error("🔴 RETAILIRSA 2.5–2.6 – **Vùng cảnh báo**: "
+                     "Tồn kho cao, rủi ro cắt đơn hàng đang tăng.")
+        else:
+            st.warning("🟡 RETAILIRSA 2.2–2.5 – **Vùng trung tính**: "
+                       "Theo dõi xu hướng tiếp theo.")
+    elif err_irsa == "API_KEY_MISSING":
+        st.info("👉 Cần FRED API Key để xem biểu đồ này")
+    else:
+        st.error(f"FRED RETAILIRSA: {err_irsa}")
+
+
+    # ── WHLSLRIRSA – Wholesale Inventories Apparel ───────────────────────────────
+    st.divider()
+    st.markdown("#### 🏪 Tồn kho Bán Sỉ – Apparel (WHLSLRIRSA)")
+    st.markdown(
+        "<div class='sub-note'>Nguồn: FRED · Wholesale Inventories: Apparel & Piece Goods · "
+        "Tín hiệu: Giảm = chuỗi cung ứng đang xả hàng, đơn sản xuất mới sắp tới</div>",
+        unsafe_allow_html=True,
+    )
+    with st.spinner("FRED WHLSLRIRSA..."):
+        whlsl, err_wh = fred_series("WHLSLRIRSA", fred_key, START_MACRO)
+
+    if whlsl is not None:
+        df_wh = whlsl.reset_index(); df_wh.columns = ["date", "value"]
+        df_wh["yoy"] = df_wh["value"].pct_change(12) * 100
+        df_wh["ma12"] = df_wh["value"].rolling(12).mean()
+
+        fig_wh = make_subplots(specs=[[{"secondary_y": True}]])
+        bar_colors_wh = ["#3fb950" if (v or 0) < 0 else "#f85149"
+                          for v in df_wh["yoy"].fillna(0)]
+        fig_wh.add_trace(go.Scatter(x=df_wh["date"], y=df_wh["value"],
+                                     name="Wholesale Ratio (x)",
+                                     line=dict(color="#58a6ff", width=2),
+                                     fill="tozeroy",
+                                     fillcolor="rgba(88,166,255,0.07)"),
+                          secondary_y=False)
+        fig_wh.add_trace(go.Scatter(x=df_wh["date"], y=df_wh["ma12"],
+                                     name="MA12",
+                                     line=dict(color="#ff9800", width=1.5, dash="dot")),
+                          secondary_y=False)
+        fig_wh.add_trace(go.Bar(x=df_wh["date"], y=df_wh["yoy"],
+                                 name="YoY%", marker_color=bar_colors_wh, opacity=0.55),
+                          secondary_y=True)
+        fig_wh.update_layout(height=300,
+                              title="Wholesale Inv/Sales Ratio – Apparel (WHLSLRIRSA)",
+                              **CHART_BASE)
+        fig_wh.update_yaxes(title_text="Ratio (x)", secondary_y=False,
+                             gridcolor="rgba(255,255,255,0.06)")
+        fig_wh.update_yaxes(title_text="YoY%", secondary_y=True, showgrid=False)
+        st.plotly_chart(fig_wh, use_container_width=True)
+
+        latest_wh = whlsl.iloc[-1]
+        yoy_wh = df_wh["yoy"].dropna().iloc[-1] if len(df_wh["yoy"].dropna()) > 0 else 0
+        col_w1, col_w2 = st.columns(2)
+        with col_w1:
+            st.metric("Wholesale Ratio hiện tại", f"{latest_wh:.2f}x",
+                      f"YoY {yoy_wh:+.1f}%", delta_color="inverse")
+        with col_w2:
+            if yoy_wh < -5:
+                st.success(f"🟢 YoY {yoy_wh:.1f}% – Wholesale đang xả hàng tốt → Tín hiệu tích cực")
+            elif yoy_wh > 10:
+                st.error(f"🔴 YoY {yoy_wh:.1f}% – Wholesale đang ứ hàng → Thận trọng")
+            else:
+                st.warning(f"🟡 YoY {yoy_wh:.1f}% – Trung tính")
+    elif err_wh == "API_KEY_MISSING":
+        st.info("👉 Cần FRED API Key")
+    else:
+        st.error(f"WHLSLRIRSA: {err_wh}")
+
+    # ── OTEXA & Vietnam Customs – Manual sources ─────────────────────────────────
+    st.divider()
+    st.markdown("#### 🌏 Nguồn Dữ Liệu Thủ Công – OTEXA & Hải Quan Việt Nam")
+
+    col_ot1, col_ot2 = st.columns(2)
+    with col_ot1:
+        st.markdown("""
+**📦 OTEXA – Nhập khẩu Hàng May Mặc vào Mỹ**
+
+Theo dõi thị phần Việt Nam vs Trung Quốc, Bangladesh, Ấn Độ.
+
+🔗 [otexa.trade.gov](https://otexa.trade.gov/msrpoint.htm)
+
+**Cách dùng:**
+1. Vào link trên → chọn **"Major Shippers"**
+2. Category: **Apparel** → Country: **Vietnam**
+3. So sánh volume MoM và YoY
+
+**Tín hiệu tích cực cho MSH/TNG:**
+- Thị phần VN tăng so với Trung Quốc
+- Volume nhập khẩu từ VN tăng YoY ≥ 10%
+        """)
+
+    with col_ot2:
+        st.markdown("""
+**🛃 Hải Quan Việt Nam – Xuất Khẩu Dệt May (HS 61 & 62)**
+
+Số liệu xuất khẩu theo tháng. Tăng 15–20% YoY = dòng tiền thông minh vào MSH/TNG.
+
+🔗 [Tổng Cục Hải Quan](https://www.customs.gov.vn/index.jsp?pageId=2)
+
+🔗 [Tổng Cục Thống Kê GSO](https://www.gso.gov.vn/px-web-2/?pxid=V0302&theme=Th%C6%B0%C6%A1ng%20m%E1%BA%A1i%20v%C3%A0%20gi%C3%A1%20c%E1%BA%A3)
+
+**Mã HS cần theo dõi:**
+- **HS 61**: Hàng dệt kim (T-shirt, polo, đồ thể thao)
+- **HS 62**: Hàng dệt thoi (áo jacket, quần, đồng phục)
+
+**Mẹo đọc số liệu:**
+- Kim ngạch XK dệt may tăng ≥ 15% YoY → 🟢
+- Thị phần Mỹ trong tổng XK tăng → 🟢
+        """)
+
+    with st.expander("📊 Tóm tắt: Kết hợp tín hiệu để ra quyết định"):
+        st.markdown("""
+| Chỉ số | Ngưỡng tích cực | Lag tới đơn hàng |
+|--------|----------------|-----------------|
+| **RETAILIRSA** | < 2.2 và đang giảm | 3–6 tháng |
+| **US Retail Sales (MRTSSM)** | Tăng 2–3T liên tiếp | 3–6 tháng |
+| **WHLSLRIRSA YoY** | < -5% | 2–4 tháng |
+| **OTEXA VN share** | Tăng vs Trung Quốc | Ngay lập tức |
+| **HS 61+62 XK VN** | YoY ≥ +15% | Xác nhận |
+
+**🏆 Tín hiệu vàng:** RETAILIRSA < 2.2 **VÀ** Retail Sales đang tăng → Tất tay MSH/TNG
+        """)
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
